@@ -1,3 +1,5 @@
 .godot/
 build/
 assets/survivor_rig.glb
+
+assets/jump_profiles.gd

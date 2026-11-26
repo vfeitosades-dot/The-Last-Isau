@@ -1,5 +1,2 @@
-# The Last Isau v0.2
-
-Protótipo Godot 4.4.1. Personagem cinza com 22 ossos, cinco novos clipes FBX retargetados e reconstruídos a 60 Hz a partir de amostras compactadas, correção de altura das solas, transições, aceleração, pulo parado e em corrida com preparação, impulso e recuperação.
-
-WASD, Shift, Espaço, mouse, Esc e R. O workflow compila e testa a importação dos cinco clipes e a execução automatizada do pulo. O teste de inicialização não substitui avaliação visual no Windows.
+# The Last Isau v0.3
+Original five FBX clips reconstructed from all 30 Hz samples, with 0.25-degree rotation-vector quantization for transfer. Original duration and looping endpoints, playback 1x, no forced wrist pose, no per-frame pelvis/sole adjustment. Constant floor calibration and horizontal root travel extraction for CharacterBody3D. Jump collider follows captured sole clearance; no doubled vertical motion. Gray custom 22-bone rig, so mesh retargeting remains approximate. CI validates durations and executes running and standing jumps.

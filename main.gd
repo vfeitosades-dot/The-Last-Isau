@@ -1,6 +1,7 @@
 extends Node3D
 
 const MODEL = preload("res://assets/survivor_rig.glb")
+const PROFILE = preload("res://assets/jump_profiles.gd")
 var body: CharacterBody3D
 var visual: Node3D
 var anim: AnimationPlayer
@@ -11,23 +12,21 @@ var overlay: PanelContainer
 var yaw := 0.0
 var pitch := -0.13
 var jump_latch := false
-var jump_phase := 0 # 0: ground, 1: anticipation, 2: flight, 3: recovery
+var jumping := false
 var jump_clock := 0.0
-var jump_buffer := 0.0
+var jump_length := 0.0
 var jump_running := false
-var walk_speed := 1.62
-var run_speed := 5.05
-var lift_speed := 2.55
-var prep_duration := 0.18
-var recovery_duration := 0.26
-var launch_frame := 0.46
-var land_frame := 0.96
-var jump_length := 1.41
-var flight_time := 0.52
+var jump_ground := 0.0
+var jump_direction := Vector3.ZERO
 var test_mode := false
 var test_time := 0.0
 var test_started := false
 var test_landed := false
+var test_count := 0
+var test_lift := 0.0
+const WALK_SPEED := 1.614
+const RUN_SPEED := 5.219
+const RUN_JUMP_SPEED := 4.612
 var clips: Dictionary = {}
 var current := ""
 var captured := true
@@ -91,6 +90,13 @@ func _ready() -> void:
 		push_error("Animation import incomplete: " + str(clips))
 		get_tree().quit(1)
 		return
+	var expected := {"idle": 14.3333333, "walk": 1.0333333, "run": 0.6, "jump": 2.3666667, "run_jump": 0.9333333}
+	for state in expected:
+		var duration: float = anim.get_animation(clips[state]).length
+		if absf(duration - float(expected[state])) > 0.04:
+			push_error("Unexpected clip duration: " + String(state) + " " + str(duration))
+			get_tree().quit(1)
+			return
 	print("All 5 animation clips imported")
 	test_mode = "--motion-test" in OS.get_cmdline_user_args()
 	pivot = Node3D.new()
@@ -149,46 +155,39 @@ func _find_anim(n: Node) -> AnimationPlayer:
 			return found
 	return null
 
-func _play(state: String, blend: float = 0.18) -> void:
+func _play(state: String, blend: float = 0.15) -> void:
 	if anim == null or not clips.has(state) or current == state:
 		return
-	var old := current
-	var phase := 0.0
-	if old in ["walk", "run"] and state in ["walk", "run"] and anim.current_animation_length > 0.0:
-		phase = fposmod(anim.current_animation_position / anim.current_animation_length, 1.0)
 	current = state
+	anim.speed_scale = 1.0
 	anim.play(clips[state], blend)
-	if phase > 0.0:
-		anim.seek(phase * anim.get_animation(clips[state]).length, false)
 
-func _start_jump(speed: float) -> void:
-	jump_running = speed > 2.7
-	prep_duration = 0.065 if jump_running else 0.19
-	recovery_duration = 0.16 if jump_running else 0.26
-	launch_frame = 0.075 if jump_running else 0.46
-	land_frame = 0.66 if jump_running else 0.96
-	lift_speed = 2.95 if jump_running else 2.55
-	flight_time = 2.0 * lift_speed / gravity
-	_play("run_jump" if jump_running else "jump", 0.075)
+func _start_jump(horizontal: Vector3) -> void:
+	jump_running = horizontal.length() > 2.8
+	jump_direction = horizontal.normalized() if jump_running else Vector3.ZERO
+	jump_ground = body.position.y
+	jump_clock = 0.0
+	jumping = true
+	body.floor_snap_length = 0.0
+	_play("run_jump" if jump_running else "jump", 0.10)
 	jump_length = anim.get_animation(clips[current]).length
-	anim.speed_scale = launch_frame / prep_duration
-	jump_clock = 0.0
-	jump_phase = 1
-
-func _launch() -> void:
-	jump_phase = 2
-	jump_clock = 0.0
-	anim.seek(launch_frame, true)
-	anim.speed_scale = (land_frame - launch_frame) / flight_time
-	body.velocity.y = lift_speed
 	test_started = true
 
-func _land() -> void:
-	jump_phase = 3
+func _jump_height(time: float) -> float:
+	var values: Array = PROFILE.RUN_JUMP if jump_running else PROFILE.JUMP
+	var frame := clampf(time * 30.0, 0.0, float(values.size() - 1))
+	var i := int(floor(frame))
+	var j := mini(i + 1, values.size() - 1)
+	return lerpf(float(values[i]), float(values[j]), frame - float(i))
+
+func _reset_player() -> void:
+	body.position = Vector3(0, 0.05, 0)
+	body.velocity = Vector3.ZERO
+	visual.position.y = 0.0
+	body.floor_snap_length = 0.20
+	jumping = false
 	jump_clock = 0.0
-	anim.seek(land_frame, true)
-	anim.speed_scale = maxf(jump_length - land_frame, 0.02) / recovery_duration
-	test_landed = true
+	_play("idle", 0.1)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and captured:
@@ -198,10 +197,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.physical_keycode == KEY_ESCAPE:
 			_toggle_menu()
 		elif event.physical_keycode == KEY_R and captured:
-			body.position = Vector3(0, 0.05, 0)
-			body.velocity = Vector3.ZERO
-			jump_phase = 0
-			jump_buffer = 0.0
+			_reset_player()
 
 func _physics_process(delta: float) -> void:
 	if body == null or pivot == null:
@@ -214,90 +210,61 @@ func _physics_process(delta: float) -> void:
 	var jump := captured and Input.is_physical_key_pressed(KEY_SPACE)
 	if test_mode:
 		test_time += delta
-		axis = Vector2(0, -1) if test_time > 0.2 and test_time < 3.2 else Vector2.ZERO
-		sprint = test_time > 0.6 and test_time < 3.2
-		jump = test_time > 1.6 and test_time < 1.7
-		if test_time > 3.8:
-			if test_started and test_landed:
+		axis = Vector2(0, -1) if test_time > 0.2 and test_time < 2.9 else Vector2.ZERO
+		sprint = test_time > 0.6 and test_time < 2.9
+		jump = (test_time > 1.6 and test_time < 1.7) or (test_time > 4.0 and test_time < 4.1)
+		if test_time > 7.0:
+			if test_count == 2 and test_lift > 0.2:
 				print("Motion smoke test OK: jump and landing")
 				get_tree().quit()
 			else:
-				push_error("Motion smoke test failed")
+				push_error("Motion smoke test failed: " + str(test_count) + " jumps, lift " + str(test_lift))
 				get_tree().quit(1)
 			return
-	if jump and not jump_latch:
-		jump_buffer = 0.14
+	var pressed := jump and not jump_latch
 	jump_latch = jump
-	jump_buffer = maxf(jump_buffer - delta, 0.0)
-	axis = axis.normalized()
-	var desired := Basis(Vector3.UP, yaw) * Vector3(axis.x, 0, axis.y)
+	var desired := Basis(Vector3.UP, yaw) * Vector3(axis.normalized().x, 0, axis.normalized().y)
 	var horizontal := Vector3(body.velocity.x, 0, body.velocity.z)
-	var grounded := body.is_on_floor()
-	var target := desired * (run_speed if sprint else walk_speed)
-	# Weight transfer and inertia: no instantaneous stop on a direction change.
-	var acceleration := 9.0 if grounded else 2.1
-	if axis.length_squared() < 0.01:
-		acceleration = 12.0 if grounded else 0.65
-	if jump_phase == 1 and not jump_running:
-		target *= 0.2
-	if jump_phase == 3:
-		target *= 0.82
-	horizontal = horizontal.move_toward(target, acceleration * delta)
+	if not jumping:
+		var target := desired * (RUN_SPEED if sprint else WALK_SPEED)
+		horizontal = horizontal.move_toward(target, (16.0 if desired.length_squared() > 0.01 else 20.0) * delta)
+		if horizontal.length() > 0.12:
+			var target_yaw := atan2(horizontal.x, horizontal.z)
+			visual.rotation.y = lerp_angle(visual.rotation.y, target_yaw, 1.0 - exp(-12.0 * delta))
+		if pressed and body.is_on_floor():
+			_start_jump(horizontal)
+	if jumping:
+		jump_clock = minf(jump_clock + delta, jump_length)
+		horizontal = jump_direction * RUN_JUMP_SPEED if jump_running else Vector3.ZERO
+		var height := _jump_height(jump_clock)
+		test_lift = maxf(test_lift, height)
+		var target_y := jump_ground + height
+		body.velocity.y = (target_y - body.position.y) / delta
+		if height <= 0.001 and body.velocity.y <= 0.01:
+			body.velocity.y = minf(body.velocity.y, -0.12)
+	else:
+		body.velocity.y = maxf(body.velocity.y - gravity * delta, -35.0) if not body.is_on_floor() else -0.1
 	body.velocity.x = horizontal.x
 	body.velocity.z = horizontal.z
-	var speed := horizontal.length()
-	if speed > 0.18:
-		var target_yaw := atan2(horizontal.x, horizontal.z)
-		visual.rotation.y = lerp_angle(visual.rotation.y, target_yaw, 1.0 - exp(-(10.5 if grounded else 3.0) * delta))
-	elif desired.length_squared() > 0.01 and jump_phase == 0:
-		visual.rotation.y = lerp_angle(visual.rotation.y, atan2(desired.x, desired.z), 1.0 - exp(-9.0 * delta))
-	if grounded:
-		if body.velocity.y < 0.0:
-			body.velocity.y = 0.0
-	else:
-		body.velocity.y = maxf(body.velocity.y - gravity * delta, -35.0)
-	if jump_phase == 0 and grounded and jump_buffer > 0.0:
-		jump_buffer = 0.0
-		_start_jump(speed)
-	if jump_phase == 1:
-		jump_clock += delta
-		if jump_clock >= prep_duration and grounded:
-			_launch()
-		elif not grounded:
-			jump_phase = 0
-	elif jump_phase == 2:
-		jump_clock += delta
-		# Hold the final airborne pose if falling from a higher surface.
-		if anim.current_animation_position >= land_frame - 0.015:
-			anim.seek(land_frame - 0.015, true)
-			anim.speed_scale = 0.0
-	elif jump_phase == 3:
-		jump_clock += delta
-		if jump_clock >= recovery_duration:
-			jump_phase = 0
 	body.move_and_slide()
-	if jump_phase == 2 and body.is_on_floor() and body.velocity.y <= 0.0 and jump_clock > 0.08:
-		_land()
-	if jump_phase == 0:
-		var actual := Vector2(body.get_real_velocity().x, body.get_real_velocity().z).length()
-		if not body.is_on_floor():
-			_play("jump", 0.13)
-			anim.speed_scale = 0.0
-			anim.seek(0.70, true)
-		elif actual < 0.15:
-			_play("idle", 0.22)
-			anim.speed_scale = lerpf(anim.speed_scale, 1.0, 1.0 - exp(-12.0 * delta))
+	if jumping:
+		# The original pelvis arc is already animated: move the collider, not the mesh twice.
+		visual.position.y = jump_ground - body.position.y
+		if jump_clock >= jump_length - 0.001:
+			jumping = false
+			body.floor_snap_length = 0.20
+			test_landed = true
+			test_count += 1
+	else:
+		visual.position.y = move_toward(visual.position.y, 0.0, delta * 2.0)
+		var speed := Vector2(body.velocity.x, body.velocity.z).length()
+		if speed < 0.12:
+			_play("idle", 0.15)
 		else:
-			var use_run := actual > (2.35 if current == "run" else 2.85)
-			_play("run" if use_run else "walk", 0.18)
-			var nominal := run_speed if use_run else walk_speed
-			var rate := clampf(actual / nominal, 0.38, 1.55)
-			anim.speed_scale = lerpf(anim.speed_scale, rate, 1.0 - exp(-14.0 * delta))
+			var running := speed > (2.4 if current == "run" else 2.8)
+			_play("run" if running else "walk", 0.15)
 	if body.position.y < -4.0:
-		body.position = Vector3(0, 0.05, 0)
-		body.velocity = Vector3.ZERO
-		jump_phase = 0
-		jump_buffer = 0.0
+		_reset_player()
 
 func _process(delta: float) -> void:
 	if pivot == null:

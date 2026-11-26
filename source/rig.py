@@ -1,7 +1,7 @@
 import base64, zlib, json, struct, hashlib
 from pathlib import Path
 import numpy as np
-from scipy.spatial.transform import Rotation as R, RotationSpline
+from scipy.spatial.transform import Rotation as R
 base=Path(__file__).resolve().parents[1]
 src=base/'source/survivor.glb'
 assert hashlib.sha256(src.read_bytes()).hexdigest()=='e61a13a181b75213b94ae285fa6a5d6ead5ba25db092b65cc23eba3b7399eff1'
@@ -52,33 +52,48 @@ j['nodes'][0]['children'].append(offset)
 j['skins']=[{'name':'SurvivorRig','joints':list(range(offset,offset+22)),'skeleton':offset,'inverseBindMatrices':acc(inv,typ='MAT4')}]
 for n in j['nodes'][1:offset]:
  if 'mesh' in n:n['skin']=0
-# Reconstruct the five FBX clips at 60 Hz. Match actual deformed sole height.
-from scipy.interpolate import PchipInterpolator
+# Original 30 Hz motion samples. No generated frames, pose overrides or forced loop endpoints.
 inv_mats=np.array(inv).reshape(-1,4,4).transpose(0,2,1)
 verts=np.concatenate([x[0] for x in boot_data]); joint_ids=np.concatenate([x[1] for x in boot_data]); weights=np.concatenate([x[2] for x in boot_data]); vh=np.c_[verts,np.ones(len(verts))]
 local_sole=np.einsum('nkij,nj->nki',inv_mats[joint_ids],vh)
-j['animations']=[]
-for label,count,dur,encoded in lines[1:]:
- count=int(count); dur=float(dur); raw=decode(encoded); xyz=np.frombuffer(raw,dtype='i1',count=22*count*3).reshape(22,count,3).astype(float)/127
- w=np.sqrt(np.maximum(0,1-(xyz**2).sum(axis=2))); qs=np.concatenate([xyz,w[:,:,None]],axis=2); qs/=np.linalg.norm(qs,axis=2,keepdims=True)
- motion=np.frombuffer(raw,dtype='<i2',offset=22*count*3).reshape(count,3)/1000.
- source_times=np.linspace(0,dur,count); times=np.linspace(0,dur,max(2,round(dur*60)+1)); motion=PchipInterpolator(source_times,motion,axis=0)(times)
- qs=np.stack([RotationSpline(source_times,R.from_quat(q))(times).as_quat() for q in qs]); hips=np.tile(rest[0,:3],(len(times),1)); hips[:,0]+=motion[:,0]; hips[:,2]+=motion[:,2]
- for k in range(len(times)):
+clips={}; floors={}; scale=1.8/178.55
+for label in ('idle','walk','run','jump','run_jump'):
+ _,count,dur,encoded=(base/'source/native'/f'{label}.txt').read_text().split()
+ count=int(count); dur=float(dur); raw=decode(encoded)
+ q0=R.from_quat(np.frombuffer(raw,dtype='<f4',count=88).reshape(22,4)); p0=np.frombuffer(raw,dtype='<f4',count=3,offset=352)
+ dd=np.frombuffer(raw,dtype='i1',offset=364,count=69*count).astype(np.int32); mask=dd==-128
+ dd[mask]=np.frombuffer(raw,dtype='<i2',offset=364+69*count)
+ d=np.cumsum(np.cumsum(dd.reshape(69,count),axis=1),axis=1)
+ rv=np.deg2rad(d[:66].reshape(22,3,count).transpose(2,0,1)/4.)
+ qs=np.stack([(q0*R.from_rotvec(x)).as_quat() for x in rv]).transpose(1,0,2)
+ p=p0+d[66:].T/10.; times=np.linspace(0,dur,count)
+ hips=np.tile(rest[0,:3],(count,1)); hips[:,0]+=(p[:,0]-p[0,0])*scale; hips[:,1]+=(p[:,1]-99.7919388)*scale; hips[:,2]+=(p[:,2]-p[0,2])*scale
+ if label in ('walk','run','run_jump'):
+  hips[:,2]-=np.linspace(0,(p[-1,2]-p[0,2])*scale,count)
+ sole=[]
+ for k in range(count):
   mats=[]
   for i in range(22):
    m=np.eye(4);m[:3,:3]=R.from_quat(qs[i,k]).as_matrix();m[:3,3]=hips[k] if i==0 else rest[i,:3];mats.append(mats[parents[i]]@m if parents[i]>=0 else m)
   transformed=np.einsum('nkij,nkj->nki',np.asarray(mats)[joint_ids],local_sole)
-  foot_y=np.min(np.sum(transformed[:,:,1]*weights,axis=1));hips[k,1]+=motion[k,1]+.004-foot_y
- if label in ('idle','walk','run'):
-  hips[-1]=hips[0];qs[:,-1]=qs[:,0]
+  sole.append(float(np.min(np.sum(transformed[:,:,1]*weights,axis=1))))
+ floors[label]=np.asarray(sole); clips[label]=(times,qs,hips)
+ print(label,count,'duration',dur,'sole range',np.round(np.percentile(sole,[0,10,50,90,100]),3))
+j['animations']=[]
+profiles={}
+for label,(times,qs,hips) in clips.items():
+ floor_ref=float(np.percentile(floors[label],10));hips[:,1]+=.006-floor_ref
+ if label in ('jump','run_jump'):
+  profile=np.maximum(0,floors[label]-floor_ref-.025);profile[0]=profile[-1]=0;profiles[label]=np.round(profile,5).tolist()
  ta=acc(times,bounds=True);a={'name':label,'samplers':[],'channels':[]}
  for i,q in enumerate(qs):
   for k in range(1,len(q)):
    if q[k]@q[k-1]<0:q[k]*=-1
   a['channels'].append({'sampler':i,'target':{'node':offset+i,'path':'rotation'}});a['samplers'].append({'input':ta,'output':acc(q,typ='VEC4'),'interpolation':'LINEAR'})
  a['channels'].append({'sampler':22,'target':{'node':offset,'path':'translation'}});a['samplers'].append({'input':ta,'output':acc(hips,typ='VEC3'),'interpolation':'LINEAR'});j['animations'].append(a)
- print(label,len(times),'pelvis Y range',round(float(hips[:,1].min()),3),round(float(hips[:,1].max()),3))
+ assert len(times)==round(times[-1]*30)+1
+profile_file=base/'assets/jump_profiles.gd';profile_file.parent.mkdir(exist_ok=True)
+profile_file.write_text('extends RefCounted\nconst JUMP = '+json.dumps(profiles['jump'])+'\nconst RUN_JUMP = '+json.dumps(profiles['run_jump'])+'\n')
 j.pop('extensionsUsed',None);j.pop('extensionsRequired',None);j['buffers'][0]['byteLength']=len(buf)
 data=json.dumps(j,separators=(',',':')).encode();data+=b' '*((-len(data))%4)
 out=base/'assets/survivor_rig.glb';out.parent.mkdir(exist_ok=True)
