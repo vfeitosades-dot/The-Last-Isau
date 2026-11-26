@@ -39,7 +39,10 @@ jobs:
           "$G" --headless --path . --editor --import 2>&1 | tee /tmp/import.log
           "$G" --headless --path . --quit-after 120 2>&1 | tee /tmp/test.log
           if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script|Animation import incomplete' /tmp/import.log /tmp/test.log; then exit 1; fi
-          grep -F 'All 4 animation clips imported' /tmp/test.log
+          grep -F 'All 5 animation clips imported' /tmp/test.log
+          "$G" --headless --path . --quit-after 600 -- --motion-test 2>&1 | tee /tmp/motion-test.log
+          grep -F 'Motion smoke test OK: jump and landing' /tmp/motion-test.log
+          if grep -E 'SCRIPT ERROR|Parse Error|Motion smoke test failed' /tmp/motion-test.log; then exit 1; fi
       - name: Export Windows executable
         run: |
           set -eux
@@ -54,11 +57,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=v0.1.0
+          TAG=v0.2.0
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" build/The-Last-Isau.exe --clobber
           else
-            gh release create "$TAG" build/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Godot baseplate prototype; retargeted and compressed animation samples." --prerelease
+            gh release create "$TAG" build/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Gray survivor; five new FBX clips retargeted to the 22-bone rig; sole alignment, inertia, standing and running jump phases." --prerelease
           fi
       - name: Preserve original model in repository
         run: |
