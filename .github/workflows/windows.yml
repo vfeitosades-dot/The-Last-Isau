@@ -2,21 +2,25 @@ name: The Last Isau Windows
 on:
   push:
     branches: [main]
-    paths: [SurvivorLab.zip, .github/workflows/windows.yml]
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Extract project
+      - name: Retrieve and verify model
         run: |
-          mkdir -p "$RUNNER_TEMP/survivor"
-          unzip -q SurvivorLab.zip -d "$RUNNER_TEMP/survivor"
-          test -f "$RUNNER_TEMP/survivor/project.godot"
+          set -eux
+          if [ ! -f source/survivor.glb ]; then
+            curl -fL --retry 3 'https://d2ol7oe51mr4n9.cloudfront.net/user_3LvtRmhSo06EYN2PQuC8LHpIySR/18583f35-118b-4551-bf71-96f47ffa3df3.glb' -o source/survivor.glb
+          fi
+          echo 'e61a13a181b75213b94ae285fa6a5d6ead5ba25db092b65cc23eba3b7399eff1  source/survivor.glb' | sha256sum -c -
+          python -m pip install numpy scipy
+          python source/rig.py
+          test -s assets/survivor_rig.glb
       - name: Install Godot 4.4.1 and Windows export templates
         run: |
           set -eux
@@ -32,30 +36,36 @@ jobs:
         run: |
           set -euxo pipefail
           G=/tmp/godot/Godot_v4.4.1-stable_linux.x86_64
-          P="$RUNNER_TEMP/survivor"
-          "$G" --headless --path "$P" --editor --import 2>&1 | tee /tmp/import.log
-          "$G" --headless --path "$P" --quit-after 120 2>&1 | tee /tmp/test.log
-          if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script' /tmp/import.log /tmp/test.log; then exit 1; fi
+          "$G" --headless --path . --editor --import 2>&1 | tee /tmp/import.log
+          "$G" --headless --path . --quit-after 120 2>&1 | tee /tmp/test.log
+          if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script|Animation import incomplete' /tmp/import.log /tmp/test.log; then exit 1; fi
+          grep -F 'All 4 animation clips imported' /tmp/test.log
       - name: Export Windows executable
         run: |
           set -eux
-          P="$RUNNER_TEMP/survivor"
-          mkdir -p "$P/build"
-          /tmp/godot/Godot_v4.4.1-stable_linux.x86_64 --headless --path "$P" --export-release "Windows Desktop" "$P/build/The-Last-Isau.exe"
-          test -s "$P/build/The-Last-Isau.exe"
-          mkdir -p dist
-          cp "$P/build/The-Last-Isau.exe" dist/
+          mkdir -p build
+          /tmp/godot/Godot_v4.4.1-stable_linux.x86_64 --headless --path . --export-release "Windows Desktop" "$PWD/build/The-Last-Isau.exe"
+          test -s build/The-Last-Isau.exe
       - uses: actions/upload-artifact@v4
         with:
           name: The-Last-Isau-Windows
-          path: dist/The-Last-Isau.exe
+          path: build/The-Last-Isau.exe
       - name: Publish downloadable executable
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=v0.1.0
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/The-Last-Isau.exe --clobber
+            gh release upload "$TAG" build/The-Last-Isau.exe --clobber
           else
-            gh release create "$TAG" dist/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Godot baseplate prototype." --prerelease
+            gh release create "$TAG" build/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Godot baseplate prototype; retargeted and compressed animation samples." --prerelease
+          fi
+      - name: Preserve original model in repository
+        run: |
+          if ! git ls-files --error-unmatch source/survivor.glb >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add source/survivor.glb
+            git commit -m "Store original character asset [skip ci]"
+            git push origin HEAD:main
           fi
