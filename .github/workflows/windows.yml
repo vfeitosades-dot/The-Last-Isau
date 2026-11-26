@@ -1,0 +1,61 @@
+name: The Last Isau Windows
+on:
+  push:
+    branches: [main]
+    paths: [SurvivorLab.zip, .github/workflows/windows.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract project
+        run: |
+          mkdir -p "$RUNNER_TEMP/survivor"
+          unzip -q SurvivorLab.zip -d "$RUNNER_TEMP/survivor"
+          test -f "$RUNNER_TEMP/survivor/project.godot"
+      - name: Install Godot 4.4.1 and Windows export templates
+        run: |
+          set -eux
+          BASE=https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable
+          curl -fL --retry 3 "$BASE/Godot_v4.4.1-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          chmod +x /tmp/godot/Godot_v4.4.1-stable_linux.x86_64
+          curl -fL --retry 3 "$BASE/Godot_v4.4.1-stable_export_templates.tpz" -o /tmp/templates.zip
+          unzip -q /tmp/templates.zip -d /tmp/godot-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          mv /tmp/godot-templates/templates "$HOME/.local/share/godot/export_templates/4.4.1.stable"
+      - name: Import and test startup
+        run: |
+          set -euxo pipefail
+          G=/tmp/godot/Godot_v4.4.1-stable_linux.x86_64
+          P="$RUNNER_TEMP/survivor"
+          "$G" --headless --path "$P" --editor --import 2>&1 | tee /tmp/import.log
+          "$G" --headless --path "$P" --quit-after 120 2>&1 | tee /tmp/test.log
+          if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script' /tmp/import.log /tmp/test.log; then exit 1; fi
+      - name: Export Windows executable
+        run: |
+          set -eux
+          P="$RUNNER_TEMP/survivor"
+          mkdir -p "$P/build"
+          /tmp/godot/Godot_v4.4.1-stable_linux.x86_64 --headless --path "$P" --export-release "Windows Desktop" "$P/build/The-Last-Isau.exe"
+          test -s "$P/build/The-Last-Isau.exe"
+          mkdir -p dist
+          cp "$P/build/The-Last-Isau.exe" dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: The-Last-Isau-Windows
+          path: dist/The-Last-Isau.exe
+      - name: Publish downloadable executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=v0.1.0
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/The-Last-Isau.exe --clobber
+          else
+            gh release create "$TAG" dist/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Godot baseplate prototype." --prerelease
+          fi
