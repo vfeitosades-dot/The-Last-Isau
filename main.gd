@@ -43,7 +43,6 @@ var reverse_gait := false
 var queued_turn := 0.0
 var test_seen: Dictionary = {}
 var last_gait := "pack_idle"
-const RUN_JUMP_SPEED := 4.612
 var clips: Dictionary = {}
 var current := ""
 var captured := true
