@@ -79,11 +79,23 @@ for label in ('idle','walk','run','jump','run_jump'):
   sole.append(float(np.min(np.sum(transformed[:,:,1]*weights,axis=1))))
  floors[label]=np.asarray(sole); clips[label]=(times,qs,hips)
  print(label,count,'duration',dur,'sole range',np.round(np.percentile(sole,[0,10,50,90,100]),3))
+# Add all twelve original FBX clips from the user's archive.
+from pack_fbx import sample_pack
+for label,times,qs,hips in sample_pack(base/'source/locomotion',bones,parents,rest):
+ sole=[]
+ for k in range(len(times)):
+  mats=[]
+  for i in range(22):
+   m=np.eye(4);m[:3,:3]=R.from_quat(qs[i,k]).as_matrix();m[:3,3]=hips[k] if i==0 else rest[i,:3];mats.append(mats[parents[i]]@m if parents[i]>=0 else m)
+  transformed=np.einsum('nkij,nkj->nki',np.asarray(mats)[joint_ids],local_sole)
+  sole.append(float(np.min(np.sum(transformed[:,:,1]*weights,axis=1))))
+ floors[label]=np.asarray(sole);clips[label]=(times,qs,hips)
+ print(label,len(times),'duration',times[-1])
 j['animations']=[]
 profiles={}
 for label,(times,qs,hips) in clips.items():
  floor_ref=float(np.percentile(floors[label],10));hips[:,1]+=.006-floor_ref
- if label in ('jump','run_jump'):
+ if label in ('jump','run_jump','pack_jump'):
   profile=np.maximum(0,floors[label]-floor_ref-.025);profile[0]=profile[-1]=0;profiles[label]=np.round(profile,5).tolist()
  ta=acc(times,bounds=True);a={'name':label,'samplers':[],'channels':[]}
  for i,q in enumerate(qs):
@@ -93,7 +105,7 @@ for label,(times,qs,hips) in clips.items():
  a['channels'].append({'sampler':22,'target':{'node':offset,'path':'translation'}});a['samplers'].append({'input':ta,'output':acc(hips,typ='VEC3'),'interpolation':'LINEAR'});j['animations'].append(a)
  assert len(times)==round(times[-1]*30)+1
 profile_file=base/'assets/jump_profiles.gd';profile_file.parent.mkdir(exist_ok=True)
-profile_file.write_text('extends RefCounted\nconst JUMP = '+json.dumps(profiles['jump'])+'\nconst RUN_JUMP = '+json.dumps(profiles['run_jump'])+'\n')
+profile_file.write_text('extends RefCounted\nconst JUMP = '+json.dumps(profiles['jump'])+'\nconst RUN_JUMP = '+json.dumps(profiles['run_jump'])+'\nconst PACK_JUMP = '+json.dumps(profiles['pack_jump'])+'\n')
 j.pop('extensionsUsed',None);j.pop('extensionsRequired',None);j['buffers'][0]['byteLength']=len(buf)
 data=json.dumps(j,separators=(',',':')).encode();data+=b' '*((-len(data))%4)
 out=base/'assets/survivor_rig.glb';out.parent.mkdir(exist_ok=True)

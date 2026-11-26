@@ -25,7 +25,18 @@ var test_landed := false
 var test_count := 0
 var test_lift := 0.0
 const WALK_SPEED := 1.614
-const RUN_SPEED := 5.219
+const RUN_SPEED := 4.23
+const SIDE_WALK_SPEED := 1.67
+const SIDE_RUN_SPEED := 4.37
+const PACK_STATES := ["pack_idle", "pack_walk", "pack_run", "pack_jump", "pack_left_walk", "pack_right_walk", "pack_left_run", "pack_right_run", "pack_left_90", "pack_right_90", "pack_left_180", "pack_right_180"]
+const LOOP_STATES := ["idle", "walk", "run", "pack_idle", "pack_walk", "pack_run", "pack_left_walk", "pack_right_walk", "pack_left_run", "pack_right_run"]
+var turning := false
+var turn_clock := 0.0
+var turn_length := 0.0
+var turn_angle := 0.0
+var queued_turn := 0.0
+var test_seen: Dictionary = {}
+var last_gait := "pack_idle"
 const RUN_JUMP_SPEED := 4.612
 var clips: Dictionary = {}
 var current := ""
@@ -80,24 +91,24 @@ func _ready() -> void:
 	if anim != null:
 		for key in anim.get_animation_list():
 			var name_lower := String(key).to_lower()
-			for state in ["idle", "walk", "run", "jump", "run_jump"]:
+			for state in ["idle", "walk", "run", "jump", "run_jump"] + PACK_STATES:
 				if name_lower == state or name_lower.ends_with("/" + state):
 					clips[state] = key
-					if state in ["idle", "walk", "run"]:
+					if state in LOOP_STATES:
 						anim.get_animation(key).loop_mode = Animation.LOOP_LINEAR
-		_play("idle", 0.0)
-	if clips.size() != 5:
+		_play("pack_idle", 0.0)
+	if clips.size() != 17:
 		push_error("Animation import incomplete: " + str(clips))
 		get_tree().quit(1)
 		return
-	var expected := {"idle": 14.3333333, "walk": 1.0333333, "run": 0.6, "jump": 2.3666667, "run_jump": 0.9333333}
+	var expected := {"idle": 14.3333333, "walk": 1.0333333, "run": 0.6, "jump": 2.3666667, "run_jump": 0.9333333, "pack_idle": 8.2, "pack_walk": 1.0333333, "pack_run": 0.7, "pack_jump": 2.1666667, "pack_left_walk": 1.0333333, "pack_right_walk": 1.0333333, "pack_left_run": 0.6666667, "pack_right_run": 0.6666667, "pack_left_90": 0.9, "pack_right_90": 0.9333333, "pack_left_180": 1.6333333, "pack_right_180": 1.6333333}
 	for state in expected:
 		var duration: float = anim.get_animation(clips[state]).length
 		if absf(duration - float(expected[state])) > 0.04:
 			push_error("Unexpected clip duration: " + String(state) + " " + str(duration))
 			get_tree().quit(1)
 			return
-	print("All 5 animation clips imported")
+	print("All 17 animation clips imported")
 	test_mode = "--motion-test" in OS.get_cmdline_user_args()
 	pivot = Node3D.new()
 	add_child(pivot)
@@ -159,6 +170,7 @@ func _play(state: String, blend: float = 0.15) -> void:
 	if anim == null or not clips.has(state) or current == state:
 		return
 	current = state
+	test_seen[state] = true
 	anim.speed_scale = 1.0
 	anim.play(clips[state], blend)
 
@@ -169,12 +181,12 @@ func _start_jump(horizontal: Vector3) -> void:
 	jump_clock = 0.0
 	jumping = true
 	body.floor_snap_length = 0.0
-	_play("run_jump" if jump_running else "jump", 0.10)
+	_play("run_jump" if jump_running else "pack_jump", 0.10)
 	jump_length = anim.get_animation(clips[current]).length
 	test_started = true
 
 func _jump_height(time: float) -> float:
-	var values: Array = PROFILE.RUN_JUMP if jump_running else PROFILE.JUMP
+	var values: Array = PROFILE.RUN_JUMP if jump_running else PROFILE.PACK_JUMP
 	var frame := clampf(time * 30.0, 0.0, float(values.size() - 1))
 	var i := int(floor(frame))
 	var j := mini(i + 1, values.size() - 1)
@@ -187,7 +199,11 @@ func _reset_player() -> void:
 	body.floor_snap_length = 0.20
 	jumping = false
 	jump_clock = 0.0
-	_play("idle", 0.1)
+	turning = false
+	queued_turn = 0.0
+	last_gait = "pack_idle"
+	visual.rotation.y = yaw + PI
+	_play("pack_idle", 0.1)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and captured:
@@ -198,6 +214,30 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_menu()
 		elif event.physical_keycode == KEY_R and captured:
 			_reset_player()
+		elif captured:
+			match event.physical_keycode:
+				KEY_Q: queued_turn = PI / 2.0
+				KEY_E: queued_turn = -PI / 2.0
+				KEY_Z: queued_turn = PI
+				KEY_C: queued_turn = -PI
+
+func _start_turn(angle: float) -> void:
+	turning = true
+	turn_clock = 0.0
+	turn_angle = angle
+	var side := "left" if angle > 0.0 else "right"
+	var degrees_name := "180" if absf(angle) > 2.0 else "90"
+	_play("pack_" + side + "_" + degrees_name, 0.10)
+	turn_length = anim.get_animation(clips[current]).length
+	# Root yaw in the FBX carries the visible turn. Commit base yaw once, at clip end.
+
+func _finish_turn() -> void:
+	turning = false
+	visual.rotation.y += turn_angle
+	# Do not blend an already-rotated pelvis with a newly-rotated visual root.
+	_play("pack_idle", 0.0)
+	anim.advance(0.0)
+	last_gait = "pack_idle"
 
 func _physics_process(delta: float) -> void:
 	if body == null or pivot == null:
@@ -210,28 +250,61 @@ func _physics_process(delta: float) -> void:
 	var jump := captured and Input.is_physical_key_pressed(KEY_SPACE)
 	if test_mode:
 		test_time += delta
-		axis = Vector2(0, -1) if test_time > 0.2 and test_time < 2.9 else Vector2.ZERO
-		sprint = test_time > 0.6 and test_time < 2.9
-		jump = (test_time > 1.6 and test_time < 1.7) or (test_time > 4.0 and test_time < 4.1)
-		if test_time > 7.0:
-			if test_count == 2 and test_lift > 0.2:
-				print("Motion smoke test OK: jump and landing")
+		if test_time > 0.3 and test_time < 1.5: axis = Vector2(0, -1)
+		elif test_time > 1.5 and test_time < 3.5: axis = Vector2(0, -1)
+		elif test_time > 4.0 and test_time < 5.3: axis = Vector2(-1, 0)
+		elif test_time > 5.5 and test_time < 6.8: axis = Vector2(1, 0)
+		elif test_time > 7.1 and test_time < 8.3: axis = Vector2(-1, 0)
+		elif test_time > 8.6 and test_time < 9.8: axis = Vector2(1, 0)
+		sprint = (test_time > 1.5 and test_time < 3.5) or (test_time > 7.1 and test_time < 9.8)
+		jump = (test_time > 2.3 and test_time < 2.4) or (test_time > 10.4 and test_time < 10.5)
+		if test_time > 13.0 and test_time < 13.1 and not test_seen.has("pack_left_90"): queued_turn = PI / 2.0
+		if test_time > 14.2 and test_time < 14.3 and not test_seen.has("pack_right_90"): queued_turn = -PI / 2.0
+		if test_time > 15.6 and test_time < 15.7 and not test_seen.has("pack_left_180"): queued_turn = PI
+		if test_time > 17.6 and test_time < 17.7 and not test_seen.has("pack_right_180"): queued_turn = -PI
+		if test_time > 20.0:
+			var missing: Array = []
+			for state in PACK_STATES:
+				if not test_seen.has(state): missing.append(state)
+			if test_count == 2 and test_lift > 0.10 and missing.is_empty() and not turning:
+				print("Locomotion smoke test OK: all 12 pack clips and both jumps")
 				get_tree().quit()
 			else:
-				push_error("Motion smoke test failed: " + str(test_count) + " jumps, lift " + str(test_lift))
+				push_error("Locomotion smoke test failed: " + str(missing) + ", jumps " + str(test_count) + ", lift " + str(test_lift))
 				get_tree().quit(1)
 			return
 	var pressed := jump and not jump_latch
 	jump_latch = jump
-	var desired := Basis(Vector3.UP, yaw) * Vector3(axis.normalized().x, 0, axis.normalized().y)
+	var input_dir := axis.normalized()
+	var desired := Basis(Vector3.UP, yaw) * Vector3(input_dir.x, 0, input_dir.y)
 	var horizontal := Vector3(body.velocity.x, 0, body.velocity.z)
-	if not jumping:
-		var target := desired * (RUN_SPEED if sprint else WALK_SPEED)
+	var lateral := absf(axis.x) > absf(axis.y)
+	var gait := "pack_run" if sprint else "pack_walk"
+	var nominal := RUN_SPEED if sprint else WALK_SPEED
+	if lateral:
+		gait = "pack_left_" if axis.x < 0.0 else "pack_right_"
+		gait += "run" if sprint else "walk"
+		nominal = SIDE_RUN_SPEED if sprint else SIDE_WALK_SPEED
+	if turning:
+		horizontal = Vector3.ZERO
+		turn_clock += delta
+		if turn_clock >= turn_length:
+			_finish_turn()
+	elif not jumping:
+		var target := desired * nominal
 		horizontal = horizontal.move_toward(target, (16.0 if desired.length_squared() > 0.01 else 20.0) * delta)
-		if horizontal.length() > 0.12:
-			var target_yaw := atan2(horizontal.x, horizontal.z)
+		if desired.length_squared() > 0.01:
+			var target_yaw := yaw + PI if lateral else atan2(desired.x, desired.z)
 			visual.rotation.y = lerp_angle(visual.rotation.y, target_yaw, 1.0 - exp(-12.0 * delta))
-		if pressed and body.is_on_floor():
+			last_gait = gait
+			queued_turn = 0.0
+		elif queued_turn != 0.0 and horizontal.length() < 0.15 and body.is_on_floor():
+			_start_turn(queued_turn)
+			queued_turn = 0.0
+			horizontal = Vector3.ZERO
+		if pressed and body.is_on_floor() and not turning:
+			if horizontal.length() > 2.8:
+				visual.rotation.y = atan2(horizontal.x, horizontal.z)
 			_start_jump(horizontal)
 	if jumping:
 		jump_clock = minf(jump_clock + delta, jump_length)
@@ -248,21 +321,19 @@ func _physics_process(delta: float) -> void:
 	body.velocity.z = horizontal.z
 	body.move_and_slide()
 	if jumping:
-		# The original pelvis arc is already animated: move the collider, not the mesh twice.
 		visual.position.y = jump_ground - body.position.y
 		if jump_clock >= jump_length - 0.001:
 			jumping = false
 			body.floor_snap_length = 0.20
 			test_landed = true
 			test_count += 1
-	else:
+	elif not turning:
 		visual.position.y = move_toward(visual.position.y, 0.0, delta * 2.0)
 		var speed := Vector2(body.velocity.x, body.velocity.z).length()
 		if speed < 0.12:
-			_play("idle", 0.15)
+			_play("pack_idle", 0.15)
 		else:
-			var running := speed > (2.4 if current == "run" else 2.8)
-			_play("run" if running else "walk", 0.15)
+			_play(last_gait, 0.15)
 	if body.position.y < -4.0:
 		_reset_player()
 
@@ -290,7 +361,7 @@ func _build_ui() -> void:
 	status.add_theme_font_size_override("font_size", 18)
 	labels.add_child(status)
 	var hint := Label.new()
-	hint.text = "WASD  Mover     SHIFT  Correr     ESPAÇO  Pular     Mouse  Câmera     R  Reset     ESC  Menu"
+	hint.text = "WASD  Mover / lateral     SHIFT  Correr     ESPAÇO  Pular     Q/E  Girar 90°     Z/C  Girar 180°     ESC  Menu"
 	hint.add_theme_font_size_override("font_size", 13)
 	labels.add_child(hint)
 	overlay = PanelContainer.new()

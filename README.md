@@ -1,2 +1,3 @@
-# The Last Isau v0.3
-Original five FBX clips reconstructed from all 30 Hz samples, with 0.25-degree rotation-vector quantization for transfer. Original duration and looping endpoints, playback 1x, no forced wrist pose, no per-frame pelvis/sole adjustment. Constant floor calibration and horizontal root travel extraction for CharacterBody3D. Jump collider follows captured sole clearance; no doubled vertical motion. Gray custom 22-bone rig, so mesh retargeting remains approximate. CI validates durations and executes running and standing jumps.
+# The Last Isau v0.4
+
+Original Locomotion Pack: 12 animations imported from FBX (30 Hz, full precision) and 5 previous clips retained. Gray survivor remains the player; Y Bot remains in the source archive. A/D lateral, Shift sprint, Q/E 90° turn, Z/C 180° turn, Space jump (running jump retained). W/S forward/backward relative to camera. CharacterBody3D handles collision. The automatic test checks all twelve new states and both jumps; visual retarget quality requires in-game inspection.
