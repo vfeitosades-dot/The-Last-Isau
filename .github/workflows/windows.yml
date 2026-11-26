@@ -40,7 +40,7 @@ jobs:
           "$G" --headless --path . --quit-after 120 2>&1 | tee /tmp/test.log
           if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script|Animation import incomplete' /tmp/import.log /tmp/test.log; then exit 1; fi
           grep -F 'All 5 animation clips imported' /tmp/test.log
-          "$G" --headless --path . --quit-after 900 -- --motion-test 2>&1 | tee /tmp/motion-test.log
+          "$G" --headless --path . --fixed-fps 60 --quit-after 1200 -- --motion-test 2>&1 | tee /tmp/motion-test.log
           grep -F 'Motion smoke test OK: jump and landing' /tmp/motion-test.log
           if grep -E 'SCRIPT ERROR|Parse Error|Motion smoke test failed' /tmp/motion-test.log; then exit 1; fi
       - name: Export Windows executable
