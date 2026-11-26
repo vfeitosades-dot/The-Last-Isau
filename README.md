@@ -1,3 +1,3 @@
-# The Last Isau v0.4
+# The Last Isau v0.5
 
-Original Locomotion Pack: 12 animations imported from FBX (30 Hz, full precision) and 5 previous clips retained. Gray survivor remains the player; Y Bot remains in the source archive. A/D lateral, Shift sprint, Q/E 90° turn, Z/C 180° turn, Space jump (running jump retained). W/S forward/backward relative to camera. CharacterBody3D handles collision. The automatic test checks all twelve new states and both jumps; visual retarget quality requires in-game inspection.
+Preserves the gray survivor and all 17 clips. Shared anatomical skin weights reduce disconnected cuffs, boots and pelvis panels. Original FBX motion is sampled at 30 Hz. Only loop seams, airborne translation and turn heading are adjusted to integrate collision physics. Jump uses gravity and impulse, with separate preparation, flight and landing. Strafe and forward/backward gait selection uses actual velocity and hysteresis; cadence follows speed and gait phase is preserved across transitions. Turns apply heading once. The headless CI verifies clip durations and exercises all 12 pack states plus two jumps; visual quality must still be tested in the game.

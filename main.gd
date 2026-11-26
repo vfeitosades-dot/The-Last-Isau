@@ -12,28 +12,34 @@ var overlay: PanelContainer
 var yaw := 0.0
 var pitch := -0.13
 var jump_latch := false
-var jumping := false
-var jump_clock := 0.0
+var jump_phase := 0
+var phase_clock := 0.0
 var jump_length := 0.0
 var jump_running := false
 var jump_ground := 0.0
 var jump_direction := Vector3.ZERO
+var jump_speed := 0.0
+var takeoff := 0.0
+var touchdown := 0.0
+var jump_height := 0.0
+var prep_time := 0.16
 var test_mode := false
 var test_time := 0.0
-var test_started := false
-var test_landed := false
 var test_count := 0
 var test_lift := 0.0
 const WALK_SPEED := 1.614
 const RUN_SPEED := 4.23
 const SIDE_WALK_SPEED := 1.67
 const SIDE_RUN_SPEED := 4.37
+const RUN_JUMP_SPEED := 4.612
 const PACK_STATES := ["pack_idle", "pack_walk", "pack_run", "pack_jump", "pack_left_walk", "pack_right_walk", "pack_left_run", "pack_right_run", "pack_left_90", "pack_right_90", "pack_left_180", "pack_right_180"]
 const LOOP_STATES := ["idle", "walk", "run", "pack_idle", "pack_walk", "pack_run", "pack_left_walk", "pack_right_walk", "pack_left_run", "pack_right_run"]
 var turning := false
 var turn_clock := 0.0
 var turn_length := 0.0
 var turn_angle := 0.0
+var turn_start := 0.0
+var reverse_gait := false
 var queued_turn := 0.0
 var test_seen: Dictionary = {}
 var last_gait := "pack_idle"
@@ -74,6 +80,7 @@ func _ready() -> void:
 	body.floor_snap_length = 0.20
 	body.floor_stop_on_slope = true
 	body.safe_margin = 0.005
+	body.floor_max_angle = deg_to_rad(46.0)
 	add_child(body)
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.28
@@ -89,6 +96,7 @@ func _ready() -> void:
 	visual.add_child(model)
 	anim = _find_anim(model)
 	if anim != null:
+		anim.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS
 		for key in anim.get_animation_list():
 			var name_lower := String(key).to_lower()
 			for state in ["idle", "walk", "run", "jump", "run_jump"] + PACK_STATES:
@@ -166,39 +174,66 @@ func _find_anim(n: Node) -> AnimationPlayer:
 			return found
 	return null
 
-func _play(state: String, blend: float = 0.15) -> void:
-	if anim == null or not clips.has(state) or current == state:
+func _play(state: String, blend: float = 0.18, backwards: bool = false) -> void:
+	if anim == null or not clips.has(state):
 		return
+	if current == state and reverse_gait == backwards:
+		return
+	var old := current
+	var phase := 0.0
+	var sync_cycle := old in LOOP_STATES and state in LOOP_STATES and old != "pack_idle" and state != "pack_idle" and old != "idle" and state != "idle"
+	if sync_cycle and anim.current_animation_length > 0.0:
+		phase = fposmod(anim.current_animation_position / anim.current_animation_length, 1.0)
 	current = state
+	reverse_gait = backwards
 	test_seen[state] = true
 	anim.speed_scale = 1.0
-	anim.play(clips[state], blend)
+	anim.play(clips[state], blend, -1.0 if backwards else 1.0, backwards)
+	if sync_cycle:
+		anim.seek(phase * anim.get_animation(clips[state]).length, false)
 
 func _start_jump(horizontal: Vector3) -> void:
 	jump_running = horizontal.length() > 2.8
 	jump_direction = horizontal.normalized() if jump_running else Vector3.ZERO
+	jump_speed = horizontal.length() if jump_running else 0.0
 	jump_ground = body.position.y
-	jump_clock = 0.0
-	jumping = true
-	body.floor_snap_length = 0.0
-	_play("run_jump" if jump_running else "pack_jump", 0.10)
-	jump_length = anim.get_animation(clips[current]).length
-	test_started = true
+	phase_clock = 0.0
+	jump_phase = 1
+	var state := "run_jump" if jump_running else "pack_jump"
+	_play(state, 0.10)
+	jump_length = anim.get_animation(clips[state]).length
+	var meta: Array = PROFILE.JUMPS[state]
+	takeoff = float(meta[0])
+	touchdown = float(meta[1])
+	jump_height = clampf(float(meta[2]), 0.24, 0.65)
+	prep_time = minf(0.16, takeoff)
+	if takeoff > prep_time:
+		anim.seek(takeoff - prep_time, true)
 
-func _jump_height(time: float) -> float:
-	var values: Array = PROFILE.RUN_JUMP if jump_running else PROFILE.PACK_JUMP
-	var frame := clampf(time * 30.0, 0.0, float(values.size() - 1))
-	var i := int(floor(frame))
-	var j := mini(i + 1, values.size() - 1)
-	return lerpf(float(values[i]), float(values[j]), frame - float(i))
+func _launch() -> void:
+	jump_phase = 2
+	phase_clock = 0.0
+	body.floor_snap_length = 0.0
+	body.velocity.y = sqrt(2.0 * gravity * jump_height)
+	var flight := 2.0 * body.velocity.y / gravity
+	anim.seek(takeoff, true)
+	anim.speed_scale = maxf(touchdown - takeoff, 0.05) / flight
+
+func _land() -> void:
+	jump_phase = 3
+	phase_clock = 0.0
+	body.floor_snap_length = 0.20
+	anim.seek(touchdown, true)
+	anim.speed_scale = maxf(jump_length - touchdown, 0.04) / 0.24
+	test_count += 1
 
 func _reset_player() -> void:
 	body.position = Vector3(0, 0.05, 0)
 	body.velocity = Vector3.ZERO
 	visual.position.y = 0.0
 	body.floor_snap_length = 0.20
-	jumping = false
-	jump_clock = 0.0
+	jump_phase = 0
+	phase_clock = 0.0
 	turning = false
 	queued_turn = 0.0
 	last_gait = "pack_idle"
@@ -224,19 +259,24 @@ func _unhandled_input(event: InputEvent) -> void:
 func _start_turn(angle: float) -> void:
 	turning = true
 	turn_clock = 0.0
-	turn_angle = angle
+	turn_start = visual.rotation.y
 	var side := "left" if angle > 0.0 else "right"
 	var degrees_name := "180" if absf(angle) > 2.0 else "90"
-	_play("pack_" + side + "_" + degrees_name, 0.10)
+	_play("pack_" + side + "_" + degrees_name, 0.12)
 	turn_length = anim.get_animation(clips[current]).length
-	# Root yaw in the FBX carries the visible turn. Commit base yaw once, at clip end.
+	var curve: Array = PROFILE.TURNS[current]
+	turn_angle = float(curve[curve.size() - 1])
+
+func _turn_heading(time: float) -> float:
+	var curve: Array = PROFILE.TURNS[current]
+	var frame := clampf(time * 30.0, 0.0, float(curve.size() - 1))
+	var i := int(floor(frame))
+	return lerpf(float(curve[i]), float(curve[mini(i + 1, curve.size() - 1)]), frame - float(i))
 
 func _finish_turn() -> void:
 	turning = false
-	visual.rotation.y += turn_angle
-	# Do not blend an already-rotated pelvis with a newly-rotated visual root.
-	_play("pack_idle", 0.0)
-	anim.advance(0.0)
+	visual.rotation.y = turn_start + turn_angle
+	_play("pack_idle", 0.14)
 	last_gait = "pack_idle"
 
 func _physics_process(delta: float) -> void:
@@ -278,62 +318,89 @@ func _physics_process(delta: float) -> void:
 	var input_dir := axis.normalized()
 	var desired := Basis(Vector3.UP, yaw) * Vector3(input_dir.x, 0, input_dir.y)
 	var horizontal := Vector3(body.velocity.x, 0, body.velocity.z)
-	var lateral := absf(axis.x) > absf(axis.y)
-	var gait := "pack_run" if sprint else "pack_walk"
-	var nominal := RUN_SPEED if sprint else WALK_SPEED
-	if lateral:
-		gait = "pack_left_" if axis.x < 0.0 else "pack_right_"
-		gait += "run" if sprint else "walk"
-		nominal = SIDE_RUN_SPEED if sprint else SIDE_WALK_SPEED
+	var grounded := body.is_on_floor()
+	var lateral := absf(axis.x) > absf(axis.y) + 0.08
+	var backwards := axis.y > 0.1 and not lateral
+	var running := sprint and not backwards
+	var nominal := (SIDE_RUN_SPEED if running else SIDE_WALK_SPEED) if lateral else (RUN_SPEED if running else WALK_SPEED)
+	if backwards:
+		nominal = WALK_SPEED * 0.82
 	if turning:
 		horizontal = Vector3.ZERO
-		turn_clock += delta
+		turn_clock = minf(turn_clock + delta, turn_length)
+		visual.rotation.y = turn_start + _turn_heading(turn_clock)
 		if turn_clock >= turn_length:
 			_finish_turn()
-	elif not jumping:
+	elif jump_phase == 0:
 		var target := desired * nominal
-		horizontal = horizontal.move_toward(target, (16.0 if desired.length_squared() > 0.01 else 20.0) * delta)
+		var accel := 10.0 if grounded else 2.2
+		if desired.length_squared() < 0.01: accel = 14.0 if grounded else 0.8
+		horizontal = horizontal.move_toward(target, accel * delta)
 		if desired.length_squared() > 0.01:
-			var target_yaw := yaw + PI if lateral else atan2(desired.x, desired.z)
-			visual.rotation.y = lerp_angle(visual.rotation.y, target_yaw, 1.0 - exp(-12.0 * delta))
-			last_gait = gait
+			visual.rotation.y = lerp_angle(visual.rotation.y, yaw + PI, 1.0 - exp(-10.0 * delta))
 			queued_turn = 0.0
-		elif queued_turn != 0.0 and horizontal.length() < 0.15 and body.is_on_floor():
+		elif queued_turn != 0.0 and horizontal.length() < 0.15 and grounded:
 			_start_turn(queued_turn)
 			queued_turn = 0.0
 			horizontal = Vector3.ZERO
-		if pressed and body.is_on_floor() and not turning:
+		if pressed and grounded and not turning:
 			if horizontal.length() > 2.8:
 				visual.rotation.y = atan2(horizontal.x, horizontal.z)
 			_start_jump(horizontal)
-	if jumping:
-		jump_clock = minf(jump_clock + delta, jump_length)
-		horizontal = jump_direction * RUN_JUMP_SPEED if jump_running else Vector3.ZERO
-		var height := _jump_height(jump_clock)
-		test_lift = maxf(test_lift, height)
-		var target_y := jump_ground + height
-		body.velocity.y = (target_y - body.position.y) / delta
-		if height <= 0.001 and body.velocity.y <= 0.01:
-			body.velocity.y = minf(body.velocity.y, -0.12)
+	if jump_phase == 1:
+		phase_clock += delta
+		horizontal = jump_direction * jump_speed if jump_running else horizontal.move_toward(Vector3.ZERO, 18.0 * delta)
+		if phase_clock >= prep_time:
+			_launch()
+	elif jump_phase == 2:
+		phase_clock += delta
+		horizontal = horizontal.move_toward(desired * nominal, 1.2 * delta) if desired.length_squared() > 0.01 else horizontal
+		if anim.current_animation_position > touchdown - 0.02:
+			anim.seek(maxf(takeoff, touchdown - 0.02), true)
+			anim.speed_scale = 0.0
+	elif jump_phase == 3:
+		phase_clock += delta
+		horizontal = horizontal.move_toward(desired * nominal, 7.0 * delta)
+		if phase_clock >= 0.24:
+			jump_phase = 0
+	if jump_phase == 2:
+		if phase_clock > 0.0:
+			body.velocity.y = maxf(body.velocity.y - gravity * delta, -35.0)
+	elif grounded:
+		body.velocity.y = -0.1
 	else:
-		body.velocity.y = maxf(body.velocity.y - gravity * delta, -35.0) if not body.is_on_floor() else -0.1
+		body.velocity.y = maxf(body.velocity.y - gravity * delta, -35.0)
 	body.velocity.x = horizontal.x
 	body.velocity.z = horizontal.z
 	body.move_and_slide()
-	if jumping:
-		visual.position.y = jump_ground - body.position.y
-		if jump_clock >= jump_length - 0.001:
-			jumping = false
-			body.floor_snap_length = 0.20
-			test_landed = true
-			test_count += 1
-	elif not turning:
-		visual.position.y = move_toward(visual.position.y, 0.0, delta * 2.0)
-		var speed := Vector2(body.velocity.x, body.velocity.z).length()
+	if jump_phase == 2:
+		test_lift = maxf(test_lift, body.position.y - jump_ground)
+		if body.is_on_floor() and body.velocity.y <= 0.0 and phase_clock > 0.08:
+			_land()
+	if jump_phase == 0 and not turning:
+		var local := Basis(Vector3.UP, yaw).inverse() * Vector3(body.get_real_velocity().x, 0, body.get_real_velocity().z)
+		var speed := Vector2(local.x, local.z).length()
 		if speed < 0.12:
-			_play("pack_idle", 0.15)
+			_play("pack_idle", 0.22)
+			anim.speed_scale = 1.0
 		else:
-			_play(last_gait, 0.15)
+			var side_motion := absf(local.x) > absf(local.z) * 1.12
+			if current in ["pack_left_walk", "pack_right_walk", "pack_left_run", "pack_right_run"]:
+				side_motion = absf(local.x) > absf(local.z) * 0.85
+			var fast := speed > (2.35 if current.ends_with("run") else 2.7)
+			var gait := "pack_run" if fast else "pack_walk"
+			var rate_base := RUN_SPEED if fast else WALK_SPEED
+			var reverse := local.z > 0.12 and not side_motion
+			if side_motion:
+				gait = "pack_left_" if local.x < 0.0 else "pack_right_"
+				gait += "run" if fast else "walk"
+				rate_base = SIDE_RUN_SPEED if fast else SIDE_WALK_SPEED
+			elif reverse:
+				gait = "pack_walk"
+				rate_base = WALK_SPEED
+			_play(gait, 0.20, reverse)
+			var target_rate := clampf(speed / rate_base, 0.18, 1.18)
+			anim.speed_scale = lerpf(anim.speed_scale, target_rate, 1.0 - exp(-12.0 * delta))
 	if body.position.y < -4.0:
 		_reset_player()
 

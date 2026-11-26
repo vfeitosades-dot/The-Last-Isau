@@ -63,11 +63,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=v0.4.0
+          TAG=v0.5.0
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" build/The-Last-Isau.exe --clobber
           else
-            gh release create "$TAG" build/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Original locomotion pack: 12 FBX clips plus the prior five. Native playback, lateral movement, 90/180 turns, jumps. Gray survivor." --prerelease
+            gh release create "$TAG" build/The-Last-Isau.exe --target "$GITHUB_SHA" --title "The Last Isau — Windows" --notes "Reworked joint weights, gait transitions, extracted turn heading and ballistic CharacterBody3D jumps. All 17 clips retained." --prerelease
           fi
       - name: Preserve original pack and model in repository
         run: |
